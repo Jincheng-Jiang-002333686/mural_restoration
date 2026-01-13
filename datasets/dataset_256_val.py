@@ -21,7 +21,7 @@ try:
 except ImportError:
     pyspng = None
 
-from datasets.mask_generator_256 import RandomMask
+from MAT.datasets.mask_generator_256 import RandomMask
 
 #----------------------------------------------------------------------------
 
@@ -166,7 +166,7 @@ class ImageFolderMaskDataset(Dataset):
     ):
         self._path = path
         self._zipfile = None
-        self._hole_range = hole_range
+        self._hole_range = [0.4, 0.5]
 
         if os.path.isdir(self._path):
             self._type = 'dir'
@@ -189,8 +189,8 @@ class ImageFolderMaskDataset(Dataset):
         self._load_mask()
         super().__init__(name=name, raw_shape=raw_shape, **super_kwargs)
 
-    def _load_mask(self, mpath='/data/liwenbo/datasets/Places365/standard/masks_val_256_eval'):
-        self.masks = sorted(glob.glob(mpath + '/*.png'))
+    # def _load_mask(self, mpath='/data/liwenbo/datasets/Places365/standard/masks_val_256_eval'):
+    #     self.masks = sorted(glob.glob(mpath + '/*.png'))
 
     @staticmethod
     def _file_ext(fname):
@@ -277,6 +277,6 @@ class ImageFolderMaskDataset(Dataset):
         if self._xflip[idx]:
             assert image.ndim == 3 # CHW
             image = image[:, :, ::-1]
-        # mask = RandomMask(image.shape[-1], hole_range=self._hole_range)  # hole as 0, reserved as 1
-        mask = cv2.imread(self.masks[idx], cv2.IMREAD_GRAYSCALE).astype(np.float32)[np.newaxis, :, :] / 255.0
+        mask = RandomMask(image.shape[-1], hole_range=self._hole_range)  # hole as 0, reserved as 1
+        # mask = cv2.imread(self.masks[idx], cv2.IMREAD_GRAYSCALE).astype(np.float32)[np.newaxis, :, :] / 255.0
         return image.copy(), mask, self.get_label(idx)

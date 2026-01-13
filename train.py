@@ -18,8 +18,6 @@ import torch
 import dnnlib
 
 from training import training_loop
-# from training import training_loop_simmim as training_loop
-# from training import training_loop_woMap as training_loop
 from metrics import metric_main
 from torch_utils import training_stats
 from torch_utils import custom_ops
@@ -55,6 +53,7 @@ def setup_training_loop_kwargs(
     loss = None,
     gamma      = None, # Override R1 gamma: <float>
     pr         = None,
+    ssim       = None,
     pl         = None, # Train with path length regularization: <bool>, default = True
     kimg       = None, # Override training duration: <int>
     batch      = None, # Override batch size: <int>
@@ -129,7 +128,7 @@ def setup_training_loop_kwargs(
                                                use_labels=True, max_size=None, xflip=False)
     args.val_set_kwargs = dnnlib.EasyDict(class_name=dataloader, path=data_val,
                                           use_labels=True, max_size=None, xflip=False)
-    args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=3, prefetch_factor=2)
+    args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=0, prefetch_factor=2)
 
     try:
         # training part
@@ -268,6 +267,13 @@ def setup_training_loop_kwargs(
         assert isinstance(pr, float)
         desc += f'-pr{pr:g}'
         args.loss_kwargs.pcp_ratio = pr
+
+    if ssim is not None:
+        assert isinstance(ssim, float)
+        if not ssim >= 0:
+            raise UserError('--ssim must be non-negative')
+        desc += f'-ssim{ssim:g}'
+        args.loss_kwargs.ssim_weight = ssim
 
     if pl is None:
         pl = True
@@ -440,8 +446,8 @@ def setup_training_loop_kwargs(
 
     if workers is not None:
         assert isinstance(workers, int)
-        if not workers >= 1:
-            raise UserError('--workers must be at least 1')
+        # if not workers >= 1:
+        #     raise UserError('--workers must be at least 1')
         args.data_loader_kwargs.num_workers = workers
 
     return desc, args
@@ -511,6 +517,7 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--loss', help='the path of loss', type=str, metavar='STRING')
 @click.option('--gamma', help='Override R1 gamma', type=float)
 @click.option('--pr', help='Override ratio of pcp loss', type=float)
+@click.option('--ssim', help='Weight for SSIM loss [default: 1.0]', type=float)
 @click.option('--pl', help='Enable path length regularization [default: true]', type=bool, metavar='BOOL')
 @click.option('--kimg', help='Override training duration', type=int, metavar='INT')
 @click.option('--batch', help='Override batch size', type=int, metavar='INT')
@@ -537,7 +544,10 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--allow-tf32', help='Allow PyTorch to use TF32 internally', type=bool, metavar='BOOL')
 @click.option('--workers', help='Override number of DataLoader workers', type=int, metavar='INT')
 
-def main(ctx, outdir, dry_run, **config_kwargs):
+@click.option('--wandb-project', help='WandB project name', type=str, default='mat_inpainting_largemask')
+@click.option('--wandb-entity', help='WandB entity name', type=str, default=None)
+
+def main(ctx, outdir, dry_run, wandb_project, wandb_entity, **config_kwargs):
     """Train a GAN using the techniques described in the paper
     "Training Generative Adversarial Networks with Limited Data".
 
@@ -545,21 +555,21 @@ def main(ctx, outdir, dry_run, **config_kwargs):
 
     \b
     # Train with custom dataset using 1 GPU.
-    python train.py --outdir=~/training-runs --data=~/mydataset.zip --gpus=1
+    python train_inpainting0.py --outdir=~/training-runs --data=~/mydataset.zip --gpus=1
 
     \b
     # Train class-conditional CIFAR-10 using 2 GPUs.
-    python train.py --outdir=~/training-runs --data=~/datasets/cifar10.zip \\
+    python train_inpainting0.py --outdir=~/training-runs --data=~/datasets/cifar10.zip \\
         --gpus=2 --cfg=cifar --cond=1
 
     \b
     # Transfer learn MetFaces from FFHQ using 4 GPUs.
-    python train.py --outdir=~/training-runs --data=~/datasets/metfaces.zip \\
+    python train_inpainting0.py --outdir=~/training-runs --data=~/datasets/metfaces.zip \\
         --gpus=4 --cfg=paper1024 --mirror=1 --resume=ffhq1024 --snap=10
 
     \b
     # Reproduce original StyleGAN2 config F.
-    python train.py --outdir=~/training-runs --data=~/datasets/ffhq.zip \\
+    python train_inpainting0.py --outdir=~/training-runs --data=~/datasets/ffhq.zip \\
         --gpus=8 --cfg=stylegan2 --mirror=1 --aug=noaug
 
     \b
@@ -581,6 +591,10 @@ def main(ctx, outdir, dry_run, **config_kwargs):
       lsundog256     LSUN Dog trained at 256x256 resolution.
       <PATH or URL>  Custom network pickle.
     """
+    if wandb_project:
+        os.environ['WANDB_PROJECT'] = wandb_project
+    if wandb_entity:
+        os.environ['WANDB_ENTITY'] = wandb_entity
     print('Start')
     dnnlib.util.Logger(should_flush=True)
 

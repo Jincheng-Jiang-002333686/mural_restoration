@@ -24,7 +24,7 @@ import torch.nn.functional as F
 
 import legacy
 from datasets.mask_generator_512 import RandomMask
-from networks.mat import Generator
+from networks.mat_p1 import Generator
 
 
 def num_range(s: str) -> List[int]:

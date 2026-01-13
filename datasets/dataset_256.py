@@ -21,8 +21,7 @@ try:
 except ImportError:
     pyspng = None
 
-from datasets.mask_generator_256 import RandomMask
-
+from .mask_generator_256 import RandomMask
 #----------------------------------------------------------------------------
 
 class Dataset(torch.utils.data.Dataset):
@@ -166,7 +165,7 @@ class ImageFolderMaskDataset(Dataset):
     ):
         self._path = path
         self._zipfile = None
-        self._hole_range = hole_range
+        self._hole_range = [0.4, 0.5]
 
         if os.path.isdir(self._path):
             self._type = 'dir'
@@ -230,19 +229,19 @@ class ImageFolderMaskDataset(Dataset):
             image = np.repeat(image, 3, axis=2)
 
         # restricted to 256x256
-        res = 256
-        H, W, C = image.shape
-        if H < res or W < res:
-            top = 0
-            bottom = max(0, res - H)
-            left = 0
-            right = max(0, res - W)
-            image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_REFLECT)
-        H, W, C = image.shape
-        h = random.randint(0, H - res)
-        w = random.randint(0, W - res)
-        image = image[h:h+res, w:w+res, :]
-
+        # res = 256
+        # H, W, C = image.shape
+        # if H < res or W < res:
+        #     top = 0
+        #     bottom = max(0, res - H)
+        #     left = 0
+        #     right = max(0, res - W)
+        #     image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_REFLECT)
+        # H, W, C = image.shape
+        # h = random.randint(0, H - res)
+        # w = random.randint(0, W - res)
+        # image = image[h:h+res, w:w+res, :]
+        image = cv2.resize(image, (256, 256))
         image = np.ascontiguousarray(image.transpose(2, 0, 1)) # HWC => CHW
 
         return image

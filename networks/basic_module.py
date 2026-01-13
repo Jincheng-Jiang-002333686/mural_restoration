@@ -13,6 +13,55 @@ from torch_utils.ops import upfirdn2d
 from torch_utils.ops import bias_act
 
 #----------------------------------------------------------------------------
+@persistence.persistent_class
+class MADFConv(nn.Module):
+    """Apply dynamic filters - original MADF style"""
+    def __init__(self, out_channels, kernel_size, stride=1, padding=0, activation='relu'):
+        super().__init__()
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.activation = activation
+
+        # Bias and activation
+        self.bias = nn.Parameter(torch.zeros([out_channels]))
+        if activation == 'relu':
+            self.activation_fn = nn.ReLU()
+        elif activation == 'leaky' or activation == 'lrelu':
+            self.activation_fn = nn.LeakyReLU(negative_slope=0.2)
+        else:
+            self.activation_fn = None
+
+    def forward(self, features, filters):
+        N, C, H_in, W_in = features.shape
+
+        # Calculate output size
+        H_out = (H_in + 2 * self.padding - self.kernel_size) // self.stride + 1
+        W_out = (W_in + 2 * self.padding - self.kernel_size) // self.stride + 1
+
+        # Unfold features
+        features_unf = F.unfold(features, self.kernel_size,
+                                padding=self.padding, stride=self.stride)
+        # [N, C*k*k, H_out*W_out]
+
+        # Reshape for matmul
+        features_unf = features_unf.transpose(1, 2).unsqueeze(2)
+        # [N, H_out*W_out, 1, C*k*k]
+
+        # Apply filters
+        result = features_unf.matmul(filters)  # [N, H_out*W_out, 1, out_channels]
+        result = result.squeeze(2).transpose(1, 2)  # [N, out_channels, H_out*W_out]
+        result = result.view(N, self.out_channels, H_out, W_out)
+
+        # Apply bias
+        result = result + self.bias.view(1, -1, 1, 1)
+
+        # Apply activation
+        if self.activation_fn is not None:
+            result = self.activation_fn(result)
+
+        return result
 
 @misc.profiled_function
 def normalize_2nd_moment(x, dim=1, eps=1e-8):

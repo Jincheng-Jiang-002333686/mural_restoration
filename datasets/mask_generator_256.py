@@ -58,27 +58,33 @@ def RandomBrush(
         mask = np.flip(mask, 1)
     return mask
 
-def RandomMask(s, hole_range=[0,1]):
-    coef = min(hole_range[0] + hole_range[1], 1.0)
+def RandomMask(s, hole_range=[0.4, 0.5]):
+    """
+    Generate random mask with only brush strokes.
+    Target hole ratio between 0.2 and 0.3.
+    """
     while True:
         mask = np.ones((s, s), np.uint8)
-        def Fill(max_size):
-            w, h = np.random.randint(max_size), np.random.randint(max_size)
-            ww, hh = w // 2, h // 2
-            x, y = np.random.randint(-ww, s - w + ww), np.random.randint(-hh, s - h + hh)
-            mask[max(y, 0): min(y + h, s), max(x, 0): min(x + w, s)] = 0
-        def MultiFill(max_tries, max_size):
-            for _ in range(np.random.randint(max_tries)):
-                Fill(max_size)
-        MultiFill(int(4 * coef), s // 2)
-        MultiFill(int(2 * coef), s)
-        mask = np.logical_and(mask, 1 - RandomBrush(int(8 * coef), s))  # hole denoted as 0, reserved as 1
+
+        # Start with fewer brush strokes and add more if needed
+        # Estimate: start with 4-8 strokes for 20-30% coverage
+        num_strokes = np.random.randint(4, 8)
+
+        # Generate brush stroke mask
+        brush_mask = RandomBrush(num_strokes, s)
+
+        # Apply brush strokes as holes (invert the brush mask)
+        mask = np.logical_and(mask, 1 - brush_mask).astype(np.uint8)
+
+        # Calculate hole ratio
         hole_ratio = 1 - np.mean(mask)
+
+        # Check if within desired range
         if hole_range is not None and (hole_ratio <= hole_range[0] or hole_ratio >= hole_range[1]):
             continue
         return mask[np.newaxis, ...].astype(np.float32)
 
-def BatchRandomMask(batch_size, s, hole_range=[0, 1]):
+def BatchRandomMask(batch_size, s, hole_range=[0.4, 0.5]):
     return np.stack([RandomMask(s, hole_range=hole_range) for _ in range(batch_size)], axis=0)
 
 
@@ -87,7 +93,15 @@ if __name__ == '__main__':
     res = 256
     cnt = 2000
     tot = 0
+    ratios = []
+
     for i in range(cnt):
-        mask = RandomMask(s=res)
-        tot += mask.mean()
-    print(tot / cnt)
+        mask = RandomMask(s=res, hole_range=[0.2, 0.3])
+        ratio = mask.mean()
+        tot += ratio
+        ratios.append(ratio)
+
+    print(f"Average preserved ratio: {tot / cnt:.3f}")
+    print(f"Average hole ratio: {1 - tot / cnt:.3f}")
+    print(f"Min hole ratio: {1 - max(ratios):.3f}")
+    print(f"Max hole ratio: {1 - min(ratios):.3f}")

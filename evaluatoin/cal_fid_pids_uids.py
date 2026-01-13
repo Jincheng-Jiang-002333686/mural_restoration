@@ -8,7 +8,7 @@ import glob
 import pyspng
 import PIL.Image
 import torch
-import dnnlib
+from MAT import dnnlib
 import scipy.linalg
 import sklearn.svm
 

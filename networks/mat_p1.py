@@ -528,15 +528,15 @@ class EncFromRGB(nn.Module):
     def __init__(self, in_channels, out_channels, activation):  # res = 2, ..., resolution_log2
         super().__init__()
         self.conv0 = Conv2dLayer(in_channels=in_channels,
-                                 out_channels=out_channels,
-                                 kernel_size=1,
-                                 activation=activation,
-                                 )
+                                out_channels=out_channels,
+                                kernel_size=1,
+                                activation=activation,
+                                )
         self.conv1 = Conv2dLayer(in_channels=out_channels,
-                                 out_channels=out_channels,
-                                 kernel_size=3,
-                                 activation=activation,
-                                 )
+                                out_channels=out_channels,
+                                kernel_size=3,
+                                activation=activation,
+                                )
 
     def forward(self, x):
         x = self.conv0(x)
@@ -612,10 +612,10 @@ class ToStyle(nn.Module):
     def __init__(self, in_channels, out_channels, activation, drop_rate):
         super().__init__()
         self.conv = nn.Sequential(
-            Conv2dLayer(in_channels=in_channels, out_channels=in_channels, kernel_size=3, activation=activation, down=2),
-            Conv2dLayer(in_channels=in_channels, out_channels=in_channels, kernel_size=3, activation=activation, down=2),
-            Conv2dLayer(in_channels=in_channels, out_channels=in_channels, kernel_size=3, activation=activation, down=2),
-        )
+                Conv2dLayer(in_channels=in_channels, out_channels=in_channels, kernel_size=3, activation=activation, down=2),
+                Conv2dLayer(in_channels=in_channels, out_channels=in_channels, kernel_size=3, activation=activation, down=2),
+                Conv2dLayer(in_channels=in_channels, out_channels=in_channels, kernel_size=3, activation=activation, down=2),
+                )
 
         self.pool = nn.AdaptiveAvgPool2d(1)
         self.fc = FullyConnectedLayer(in_features=in_channels,
@@ -639,19 +639,19 @@ class DecBlockFirstV2(nn.Module):
         self.res = res
 
         self.conv0 = Conv2dLayer(in_channels=in_channels,
-                                 out_channels=in_channels,
-                                 kernel_size=3,
-                                 activation=activation,
-                                 )
+                                out_channels=in_channels,
+                                kernel_size=3,
+                                activation=activation,
+                                )
         self.conv1 = StyleConv(in_channels=in_channels,
-                               out_channels=out_channels,
-                               style_dim=style_dim,
-                               resolution=2**res,
-                               kernel_size=3,
-                               use_noise=use_noise,
-                               activation=activation,
-                               demodulate=demodulate,
-                               )
+                              out_channels=out_channels,
+                              style_dim=style_dim,
+                              resolution=2**res,
+                              kernel_size=3,
+                              use_noise=use_noise,
+                              activation=activation,
+                              demodulate=demodulate,
+                              )
         self.toRGB = ToRGB(in_channels=out_channels,
                            out_channels=img_channels,
                            style_dim=style_dim,
@@ -744,7 +744,7 @@ class DecStyleBlock(nn.Module):
         self.conv0 = StyleConv(in_channels=in_channels,
                                out_channels=out_channels,
                                style_dim=style_dim,
-                               resolution=2 ** res,
+                               resolution=2**res,
                                kernel_size=3,
                                up=2,
                                use_noise=use_noise,
@@ -754,7 +754,7 @@ class DecStyleBlock(nn.Module):
         self.conv1 = StyleConv(in_channels=out_channels,
                                out_channels=out_channels,
                                style_dim=style_dim,
-                               resolution=2 ** res,
+                               resolution=2**res,
                                kernel_size=3,
                                use_noise=use_noise,
                                activation=activation,
@@ -767,20 +767,10 @@ class DecStyleBlock(nn.Module):
                            demodulate=False,
                            )
 
-    # Added 'mask' to the forward pass signature
-    def forward(self, x, img, style, skip, mask, noise_mode='random'):
+    def forward(self, x, img, style, skip, noise_mode='random'):
         x = self.conv0(x, style, noise_mode=noise_mode)
-
-        # Replaced 'x = x + skip' with Teacher-Forcing logic
-
-        # 1. Downsample the original high-res mask to the current feature map's resolution
-        current_mask = F.interpolate(mask, size=x.shape[-2:], mode='nearest')
-
-        # 2. Fuse the features: use the decoder's generated features 'x' for the hole (where mask=0),
-        #    and force the ground-truth 'skip' features for the known areas (where mask=1).
-        x_fused = x * (1 - current_mask) + skip * current_mask
-
-        x = self.conv1(x_fused, style, noise_mode=noise_mode)
+        x = x + skip
+        x = self.conv1(x, style, noise_mode=noise_mode)
         img = self.toRGB(x, style, skip=img)
 
         return x, img
@@ -792,158 +782,139 @@ class FirstStage(nn.Module):
                  use_noise=False, demodulate=True, activation='lrelu'):
         super().__init__()
         res = 64
-        channel_schedule = [64, 128, 180]
 
-        # This layer processes the image at 256x256 to capture the first skip
-        self.conv_first = Conv2dLayer(in_channels=img_channels + 1, out_channels=channel_schedule[0], kernel_size=3,
-                                      activation=activation)
-
-        self.enc_conv = nn.ModuleList()
-
-        self.enc_conv.append(
-            MADFLayer(
-                in_channels=channel_schedule[0],
-                out_channels=channel_schedule[0],
-                kernel_size=3,
-                down=2,
-                mask_channels=1,
-                activation=activation
-            )
-        )
-        self.enc_conv.append(
-            MADFLayer(
-                in_channels=channel_schedule[0],
-                out_channels=channel_schedule[1],
-                kernel_size=3,
-                down=2,
-                mask_channels=16,
-                activation=activation
-            )
-        )
-
-        self.expand_final = Conv2dLayer(
-            in_channels=channel_schedule[1],
-            out_channels=dim,
+        # Stage 1: MADF for initial mask-aware processing (4→16)
+        # This captures mask information effectively with low memory cost
+        self.madf_conv = MADFLayer(
+            in_channels=img_channels+1,  # 4 channels
+            out_channels=16,
             kernel_size=3,
+            down=1,  # No downsampling
+            mask_channels=1,
             activation=activation
         )
 
-        # Renamed bridge layers for clarity
-        self.skip_proj_256 = Conv2dLayer(in_channels=channel_schedule[0], out_channels=dim, kernel_size=1,
-                                         activation=activation)
-        self.skip_proj_128 = Conv2dLayer(in_channels=channel_schedule[0], out_channels=dim, kernel_size=1,
-                                         activation=activation)
-        self.skip_proj_64 = Conv2dLayer(in_channels=channel_schedule[1], out_channels=dim, kernel_size=1,
-                                        activation=activation)
+        # Stage 2: Efficient channel expansion (16→180)
+        # Using 1x1 conv to expand channels without spatial operations
+        self.expand_channels = Conv2dLayer(
+            in_channels=16,
+            out_channels=dim,  # 180
+            kernel_size=1,  # 1x1 conv is memory efficient
+            activation=activation
+        )
 
-        # Transformer blocks
+        # Stage 3: Encoder convolutions (all at 180 channels)
+        self.enc_conv = nn.ModuleList()
+        down_time = int(np.log2(img_resolution // res))  # 2 for 256→64
+
+        for i in range(down_time):
+            self.enc_conv.append(
+                Conv2dLayerPartial(
+                    in_channels=dim,
+                    out_channels=dim,
+                    kernel_size=3,
+                    down=2,
+                    activation=activation
+                )
+            )
+
+        # Rest remains the same (transformer blocks, decoder, etc.)
         depths = [2, 3, 4, 3, 2]
-        ratios = [1, 1 / 2, 1 / 2, 2, 2]
+        ratios = [1, 1/2, 1/2, 2, 2]
         num_heads = 6
         window_sizes = [8, 16, 16, 16, 8]
         drop_path_rate = 0.1
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
+
         self.tran = nn.ModuleList()
-        tran_res = res
         for i, depth in enumerate(depths):
-            tran_res = int(tran_res * ratios[i])
+            res = int(res * ratios[i])
             if ratios[i] < 1:
-                merge = PatchMerging(dim, dim, down=int(1 / ratios[i]))
+                merge = PatchMerging(dim, dim, down=int(1/ratios[i]))
             elif ratios[i] > 1:
                 merge = PatchUpsampling(dim, dim, up=ratios[i])
             else:
                 merge = None
             self.tran.append(
-                BasicLayer(dim=dim, input_resolution=[tran_res, tran_res], depth=depth, num_heads=num_heads,
+                BasicLayer(dim=dim, input_resolution=[res, res], depth=depth, num_heads=num_heads,
                            window_size=window_sizes[i], drop_path=dpr[sum(depths[:i]):sum(depths[:i + 1])],
                            downsample=merge)
             )
 
-        # Style modules and decoder setup
+        # Global style modules
         down_conv = []
         for i in range(int(np.log2(16))):
-            down_conv.append(
-                Conv2dLayer(in_channels=dim, out_channels=dim, kernel_size=3, down=2, activation=activation))
+            down_conv.append(Conv2dLayer(in_channels=dim, out_channels=dim, kernel_size=3, down=2, activation=activation))
         down_conv.append(nn.AdaptiveAvgPool2d((1, 1)))
         self.down_conv = nn.Sequential(*down_conv)
-        self.to_style = FullyConnectedLayer(in_features=dim, out_features=dim * 2, activation=activation)
+        self.to_style = FullyConnectedLayer(in_features=dim, out_features=dim*2, activation=activation)
         self.ws_style = FullyConnectedLayer(in_features=w_dim, out_features=dim, activation=activation)
-        mask_style_channels = 64
-        self.mask_style_encoder = nn.Sequential(
-            Conv2dLayer(1, 16, kernel_size=4, down=2, activation='lrelu'),
-            Conv2dLayer(16, 32, kernel_size=4, down=2, activation='lrelu'),
-            Conv2dLayer(32, mask_style_channels, kernel_size=4, down=2, activation='lrelu'),
-            nn.AdaptiveAvgPool2d((1, 1))
-        )
-        self.style_fusion = FullyConnectedLayer(in_features=dim * 2 + dim + mask_style_channels, out_features=dim * 3)
+        self.to_square = FullyConnectedLayer(in_features=dim, out_features=16*16, activation=activation)
+
+        # Decoder
         style_dim = dim * 3
         self.dec_conv = nn.ModuleList()
-        down_time = int(np.log2(img_resolution // res))
         for i in range(down_time):
-            block_res = res * (2 ** (i + 1))
-            self.dec_conv.append(
-                DecStyleBlock(block_res, dim, dim, activation, style_dim, use_noise, demodulate, img_channels)
-            )
+            res = res * 2
+            self.dec_conv.append(DecStyleBlock(int(np.log2(res)), dim, dim, activation, style_dim, use_noise, demodulate, img_channels))
 
     def forward(self, images_in, masks_in, ws, noise_mode='random'):
         x = torch.cat([masks_in - 0.5, images_in * masks_in], dim=1)
 
-        encoder_skips = []
-        mask = masks_in
+        skips = []
 
-        # Process at full 256x256 to get the first skip
-        x = self.conv_first(x)
-        encoder_skips.append(self.skip_proj_256(x))
+        # Stage 1: MADF processing (mask-aware)
+        x, mask_features = self.madf_conv(x, masks_in)  # [B, 16, 256, 256]
 
-        # Downsample with MADF Layer 1 (256 -> 128)
-        x, mask_features = self.enc_conv[0](x, mask)
-        encoder_skips.append(self.skip_proj_128(x))
-        mask = mask_features
+        # Stage 2: Channel expansion
+        x = self.expand_channels(x)  # [B, 180, 256, 256]
+        skips.append(x)
 
-        # Downsample with MADF Layer 2 (128 -> 64)
-        x, mask_features = self.enc_conv[1](x, mask)
-        encoder_skips.append(self.skip_proj_64(x))
-        mask = mask_features
+        # Convert mask features to binary mask for partial convolutions
+        mask = (mask_features.mean(dim=1, keepdim=True) > 0).float()
 
-        x = self.expand_final(x)
+        # Stage 3: Encoder with downsampling
+        for i, block in enumerate(self.enc_conv):
+            x, mask = block(x, mask)
+            if i != len(self.enc_conv) - 1:
+                skips.append(x)  # All skips are now 180 channels
 
-        # Transformer and Style Generation Pass
+        # Transformer processing
         x_size = x.size()[-2:]
         x = feature2token(x)
-        mask_binary = (mask.mean(dim=1, keepdim=True) > 0).float()
-        mask_token = feature2token(mask_binary) if mask_binary is not None else None
-        transformer_skips = []
+        mask = feature2token(mask) if mask is not None else None
+
         mid = len(self.tran) // 2
         for i, block in enumerate(self.tran):
             if i < mid:
-                x, x_size, mask_token = block(x, x_size, mask_token)
-                transformer_skips.append(x)
+                x, x_size, mask = block(x, x_size, mask)
+                skips.append(x)
             elif i > mid:
-                x, x_size, mask_token = block(x, x_size, None)
-                x = x + transformer_skips[mid - i]
+                x, x_size, mask = block(x, x_size, None)
+                x = x + skips[mid - i]
             else:
-                x, x_size, mask_token = block(x, x_size, None)
-                gs = self.to_style(self.down_conv(token2feature(x, x_size)).flatten(start_dim=1))
-                ws_processed = self.ws_style(ws[:, -1])
-                ws_processed = F.dropout(ws_processed, p=0.5, training=self.training)
-                mask_style = self.mask_style_encoder(masks_in).flatten(start_dim=1)
-                combined_styles = torch.cat([gs, ws_processed, mask_style], dim=1)
-                style = self.style_fusion(combined_styles)
+                x, x_size, mask = block(x, x_size, None)
 
-        # Decoder pass
+                # Style injection
+                mul_map = torch.ones_like(x) * 0.5
+                mul_map = F.dropout(mul_map, training=True)
+                ws_processed = self.ws_style(ws[:, -1])
+                add_n = self.to_square(ws_processed).unsqueeze(1)
+                add_n = F.interpolate(add_n, size=x.size(1), mode='linear', align_corners=False).squeeze(1).unsqueeze(-1)
+                x = x * mul_map + add_n * (1 - mul_map)
+                gs = self.to_style(self.down_conv(token2feature(x, x_size)).flatten(start_dim=1))
+                style = torch.cat([gs, ws_processed], dim=1)
+
+        # Decoder with skip connections
         x = token2feature(x, x_size).contiguous()
         img = None
-
-        encoder_skips.reverse()  # Now the list is [skip_64, skip_128, skip_256]
-
         for i, block in enumerate(self.dec_conv):
-            # Block 0 (64->128) needs the 128x128 skip, which is encoder_skips[1]
-            # Block 1 (128->256) needs the 256x256 skip, which is encoder_skips[2]
-            current_skip = encoder_skips[i + 1]
-            x, img = block(x, img, style, current_skip, masks_in, noise_mode=noise_mode)
+            # Skip connections work perfectly - all are 180 channels
+            x, img = block(x, img, style, skips[len(self.dec_conv)-i-1], noise_mode=noise_mode)
 
-        # Final Ensemble
+        # Final ensemble
         img = img * (1 - masks_in) + images_in * masks_in
+
         return img
 
 
