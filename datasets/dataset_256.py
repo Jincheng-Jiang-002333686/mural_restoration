@@ -165,7 +165,7 @@ class ImageFolderMaskDataset(Dataset):
     ):
         self._path = path
         self._zipfile = None
-        self._hole_range = [0.4, 0.5]
+        self._hole_range = [0.2, 0.3]
 
         if os.path.isdir(self._path):
             self._type = 'dir'
