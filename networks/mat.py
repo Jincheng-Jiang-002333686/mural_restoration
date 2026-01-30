@@ -249,138 +249,141 @@ class WindowAttention(nn.Module):
         return x, mask_windows
 
 
-class LePEAttention(nn.Module):
-    def __init__(self, dim, resolution, idx, split_size=7, num_heads=8, attn_drop=0., qk_scale=None):
-        super().__init__()
-        self.dim = dim
-        self.resolution = resolution
-        self.H = resolution
-        self.W = resolution
-        self.split_size = split_size
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim ** -0.5
-
-        # idx 0 = Horizontal stripes, idx 1 = Vertical stripes
-        if idx == 0:
-            self.H_sp, self.W_sp = self.resolution, self.split_size
-        elif idx == 1:
-            self.H_sp, self.W_sp = self.split_size, self.resolution
-        else:
-            # Global attention for small resolutions
-            self.H_sp, self.W_sp = self.resolution, self.resolution
-
-        # LePE: Depth-wise convolution for local inductive bias
-        self.get_v = nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim)
-        self.attn_drop = nn.Dropout(attn_drop)
-
-    def im2cswin(self, x):
-        B, N, C = x.shape
-        H = W = int(np.sqrt(N))
-        x = x.transpose(-2, -1).contiguous().view(B, C, H, W)
-
-        # Partition into stripes
-        x = x.view(B, C, H // self.H_sp, self.H_sp, W // self.W_sp, self.W_sp)
-        x = x.permute(0, 2, 4, 3, 5, 1).contiguous().reshape(-1, self.H_sp * self.W_sp, C)
-
-        # Multi-head split
-        x = x.reshape(-1, self.H_sp * self.W_sp, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3).contiguous()
-        return x
-
-    def get_lepe(self, x):
-        B, N, C = x.shape
-        H = W = int(np.sqrt(N))
-        x_img = x.transpose(-2, -1).contiguous().view(B, C, H, W)
-
-        # Apply LePE in the image domain
-        lepe = self.get_v(x_img)
-        lepe = lepe.view(B, C, H // self.H_sp, self.H_sp, W // self.W_sp, self.W_sp)
-        lepe = lepe.permute(0, 2, 4, 1, 3, 5).contiguous().reshape(-1, C, self.H_sp, self.W_sp)
-        lepe = lepe.reshape(-1, self.num_heads, C // self.num_heads, self.H_sp * self.W_sp).permute(0, 1, 3,
-                                                                                                    2).contiguous()
-
-        # Reshape V for attention [cite: 159]
-        v = x_img.view(B, C, H // self.H_sp, self.H_sp, W // self.W_sp, self.W_sp)
-        v = v.permute(0, 2, 4, 3, 5, 1).contiguous().reshape(-1, self.H_sp * self.W_sp, C)
-        v = v.reshape(-1, self.H_sp * self.W_sp, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3).contiguous()
-        return v, lepe
-
-    def forward(self, q, k, v):
-        B_orig, L, C = q.shape
-        H = W = self.resolution
-
-        q = self.im2cswin(q)
-        k = self.im2cswin(k)
-        v, lepe = self.get_lepe(v)
-
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
-        attn = F.softmax(attn, dim=-1)
-        attn = self.attn_drop(attn)
-
-        # Apply attention and add LePE
-        x = (attn @ v) + lepe
-        x = x.transpose(1, 2).reshape(-1, self.H_sp * self.W_sp, C)
-
-        # Reverse window partition
-        x = x.view(-1, self.H // self.H_sp, self.W // self.W_sp, self.H_sp, self.W_sp, C)
-        x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B_orig, H, W, C)
-        return x.view(B_orig, L, C)
-
-
 @persistence.persistent_class
-class CSWinTransformerBlock(nn.Module):
-    def __init__(self, dim, input_resolution, num_heads, split_size=7, mlp_ratio=4.,
-                 qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
+class SwinTransformerBlock(nn.Module):
+    r""" Swin Transformer Block.
+    Args:
+        dim (int): Number of input channels.
+        input_resolution (tuple[int]): Input resulotion.
+        num_heads (int): Number of attention heads.
+        window_size (int): Window size.
+        shift_size (int): Shift size for SW-MSA.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        qkv_bias (bool, optional): If True, add a learnable bias to query, key, value. Default: True
+        qk_scale (float | None, optional): Override default qk scale of head_dim ** -0.5 if set.
+        drop (float, optional): Dropout rate. Default: 0.0
+        attn_drop (float, optional): Attention dropout rate. Default: 0.0
+        drop_path (float, optional): Stochastic depth rate. Default: 0.0
+        act_layer (nn.Module, optional): Activation layer. Default: nn.GELU
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
+    """
+
+    def __init__(self, dim, input_resolution, num_heads, down_ratio=1, window_size=7, shift_size=0,
+                 mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
-        self.input_resolution = input_resolution  # [H, W]
+        self.input_resolution = input_resolution
         self.num_heads = num_heads
-        self.split_size = split_size
+        self.window_size = window_size
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+        if min(self.input_resolution) <= self.window_size:
+            # if window size is larger than input resolution, we don't partition windows
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
 
-        self.norm1 = norm_layer(dim)
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        if self.shift_size > 0:
+            down_ratio = 1
+        self.attn = WindowAttention(dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
+                                    down_ratio=down_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop,
+                                    proj_drop=drop)
 
-        # Parallel Multi-Head Grouping: split channels into two branches
-        # One for Horizontal stripes, one for Vertical stripes
-        self.attns = nn.ModuleList([
-            LePEAttention(
-                dim=dim // 2, resolution=input_resolution[0], idx=i,
-                split_size=split_size, num_heads=num_heads // 2,
-                attn_drop=attn_drop, qk_scale=qk_scale)
-            for i in range(2)
-        ])
+        self.fuse = FullyConnectedLayer(in_features=dim * 2, out_features=dim, activation='lrelu')
 
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(drop)
-        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
-        self.norm2 = norm_layer(dim)
-        self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
+        if self.shift_size > 0:
+            attn_mask = self.calculate_mask(self.input_resolution)
+        else:
+            attn_mask = None
+
+        self.register_buffer("attn_mask", attn_mask)
+
+    def calculate_mask(self, x_size):
+        # calculate attention mask for SW-MSA
+        H, W = x_size
+        img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
+        h_slices = (slice(0, -self.window_size),
+                    slice(-self.window_size, -self.shift_size),
+                    slice(-self.shift_size, None))
+        w_slices = (slice(0, -self.window_size),
+                    slice(-self.window_size, -self.shift_size),
+                    slice(-self.shift_size, None))
+        cnt = 0
+        for h in h_slices:
+            for w in w_slices:
+                img_mask[:, h, w, :] = cnt
+                cnt += 1
+
+        mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+        mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
+        attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+        attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+
+        return attn_mask
 
     def forward(self, x, x_size, mask=None):
-        # x: B, L, C
+        # H, W = self.input_resolution
         H, W = x_size
         B, L, C = x.shape
+        assert L == H * W, "input feature has wrong size"
 
         shortcut = x
-        x = self.norm1(x)
+        x = x.view(B, H, W, C)
+        if mask is not None:
+            mask = mask.view(B, H, W, 1)
 
-        # Generate QKV for all branches
-        qkv = self.qkv(x).reshape(B, L, 3, C).permute(2, 0, 1, 3)  # [3, B, L, C]
+        # cyclic shift
+        if self.shift_size > 0:
+            shifted_x = torch.roll(x, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+            if mask is not None:
+                shifted_mask = torch.roll(mask, shifts=(-self.shift_size, -self.shift_size), dims=(1, 2))
+        else:
+            shifted_x = x
+            if mask is not None:
+                shifted_mask = mask
 
-        # Split heads/channels for horizontal and vertical branches
-        # x1: Horizontal, x2: Vertical
-        x1 = self.attns[0](qkv[0, :, :, :C // 2], qkv[1, :, :, :C // 2], qkv[2, :, :, :C // 2])
-        x2 = self.attns[1](qkv[0, :, :, C // 2:], qkv[1, :, :, C // 2:], qkv[2, :, :, C // 2:])
+        # partition windows
+        x_windows = window_partition(shifted_x, self.window_size)  # nW*B, window_size, window_size, C
+        x_windows = x_windows.view(-1, self.window_size * self.window_size, C)  # nW*B, window_size*window_size, C
+        if mask is not None:
+            mask_windows = window_partition(shifted_mask, self.window_size)
+            mask_windows = mask_windows.view(-1, self.window_size * self.window_size, 1)
+        else:
+            mask_windows = None
 
-        x = torch.cat([x1, x2], dim=-1)
-        x = self.proj(x)
-        x = shortcut + self.drop_path(x)
+        # W-MSA/SW-MSA (to be compatible for testing on images whose shapes are the multiple of window size
+        if self.input_resolution == x_size:
+            attn_windows, mask_windows = self.attn(x_windows, mask_windows, mask=self.attn_mask)  # nW*B, window_size*window_size, C
+        else:
+            attn_windows, mask_windows = self.attn(x_windows, mask_windows, mask=self.calculate_mask(x_size).to(x.device))  # nW*B, window_size*window_size, C
+
+        # merge windows
+        attn_windows = attn_windows.view(-1, self.window_size, self.window_size, C)
+        shifted_x = window_reverse(attn_windows, self.window_size, H, W)  # B H' W' C
+        if mask is not None:
+            mask_windows = mask_windows.view(-1, self.window_size, self.window_size, 1)
+            shifted_mask = window_reverse(mask_windows, self.window_size, H, W)
+
+        # reverse cyclic shift
+        if self.shift_size > 0:
+            x = torch.roll(shifted_x, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+            if mask is not None:
+                mask = torch.roll(shifted_mask, shifts=(self.shift_size, self.shift_size), dims=(1, 2))
+        else:
+            x = shifted_x
+            if mask is not None:
+                mask = shifted_mask
+        x = x.view(B, H * W, C)
+        if mask is not None:
+            mask = mask.view(B, H * W, 1)
 
         # FFN
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        x = self.fuse(torch.cat([shortcut, x], dim=-1))
+        x = self.mlp(x)
 
         return x, mask
 
@@ -457,8 +460,8 @@ class BasicLayer(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory. Default: False.
     """
 
-    def __init__(self, dim, input_resolution, depth, num_heads, window_size,
-                 mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0.,
+    def __init__(self, dim, input_resolution, depth, num_heads, window_size, down_ratio=1,
+                 mlp_ratio=2., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0.,
                  drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
 
         super().__init__()
@@ -476,13 +479,14 @@ class BasicLayer(nn.Module):
 
         # build blocks
         self.blocks = nn.ModuleList([
-            CSWinTransformerBlock(
-                dim=dim, input_resolution=input_resolution,
-                num_heads=num_heads, split_size=window_size,  # Use window_size as split_size
-                mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-                drop=drop, attn_drop=attn_drop,
-                drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
-                norm_layer=norm_layer)
+            SwinTransformerBlock(dim=dim, input_resolution=input_resolution,
+                                 num_heads=num_heads, down_ratio=down_ratio, window_size=window_size,
+                                 shift_size=0 if (i % 2 == 0) else window_size // 2,
+                                 mlp_ratio=mlp_ratio,
+                                 qkv_bias=qkv_bias, qk_scale=qk_scale,
+                                 drop=drop, attn_drop=attn_drop,
+                                 drop_path=drop_path[i] if isinstance(drop_path, list) else drop_path,
+                                 norm_layer=norm_layer)
             for i in range(depth)])
 
         self.conv = Conv2dLayerPartial(in_channels=dim, out_channels=dim, kernel_size=3, activation='lrelu')
@@ -492,19 +496,17 @@ class BasicLayer(nn.Module):
             x, x_size, mask = self.downsample(x, x_size, mask)
         identity = x
         for blk in self.blocks:
-            # CSWin blocks return (x, mask), but for inpainting,
-            # we only care about updating the feature map 'x' here
-            x, _ = blk(x, x_size, mask)
-
+            if self.use_checkpoint:
+                x, mask = checkpoint.checkpoint(blk, x, x_size, mask)
+            else:
+                x, mask = blk(x, x_size, mask)
         if mask is not None:
-            mask_feat = token2feature(mask, x_size)
-        else:
-            mask_feat = None
-
-        x, mask_out = self.conv(token2feature(x, x_size), mask_feat)
+            mask = token2feature(mask, x_size)
+        x, mask = self.conv(token2feature(x, x_size), mask)
         x = feature2token(x) + identity
-
-        return x, x_size, (feature2token(mask_out) if mask_out is not None else None)
+        if mask is not None:
+            mask = feature2token(mask)
+        return x, x_size, mask
 
 
 @persistence.persistent_class
@@ -835,35 +837,26 @@ class FirstStage(nn.Module):
                                         activation=activation)
 
         # Transformer blocks
-        depths = [2, 2, 6, 2, 2]
+        depths = [2, 3, 4, 3, 2]
         ratios = [1, 1 / 2, 1 / 2, 2, 2]
         num_heads = 6
-        window_sizes = [1, 2, 8, 8, 2]
+        window_sizes = [8, 16, 16, 16, 8]
         drop_path_rate = 0.1
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]
         self.tran = nn.ModuleList()
         tran_res = res
         for i, depth in enumerate(depths):
             tran_res = int(tran_res * ratios[i])
-
-            # Use window_sizes[i] as the split_size for CSWinTransformerBlock
             if ratios[i] < 1:
                 merge = PatchMerging(dim, dim, down=int(1 / ratios[i]))
             elif ratios[i] > 1:
-                merge = PatchUpsampling(dim, dim, up=int(ratios[i]))
+                merge = PatchUpsampling(dim, dim, up=ratios[i])
             else:
                 merge = None
-
             self.tran.append(
-                BasicLayer(
-                    dim=dim,
-                    input_resolution=[tran_res, tran_res],
-                    depth=depth,
-                    num_heads=num_heads,
-                    window_size=window_sizes[i],  # This now acts as split_size
-                    drop_path=dpr[sum(depths[:i]):sum(depths[:i + 1])],
-                    downsample=merge
-                )
+                BasicLayer(dim=dim, input_resolution=[tran_res, tran_res], depth=depth, num_heads=num_heads,
+                           window_size=window_sizes[i], drop_path=dpr[sum(depths[:i]):sum(depths[:i + 1])],
+                           downsample=merge)
             )
 
         # Style modules and decoder setup
