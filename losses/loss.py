@@ -11,7 +11,9 @@ import torch
 from torch_utils import training_stats
 from torch_utils import misc
 from torch_utils.ops import conv2d_gradfix
+import torch.nn.functional as F
 from losses.pcp import PerceptualLoss
+from losses.resnet_pl import ResNetPL
 
 #----------------------------------------------------------------------------
 
@@ -22,7 +24,7 @@ class Loss:
 #----------------------------------------------------------------------------
 
 class TwoStageLoss(Loss):
-    def __init__(self, device, G_mapping, G_synthesis, D, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2, truncation_psi=1, pcp_ratio=1.0):
+    def __init__(self, device, G_mapping, G_synthesis, D, augment_pipe=None, style_mixing_prob=0.9, r1_gamma=10, pl_batch_shrink=2, pl_decay=0.01, pl_weight=2, truncation_psi=1, pcp_ratio=1.0, l1_weight=10.0, fm_weight=10.0, hrf_weight=10.0):
         super().__init__()
         self.device = device
         self.G_mapping = G_mapping
@@ -36,8 +38,12 @@ class TwoStageLoss(Loss):
         self.pl_weight = pl_weight
         self.pl_mean = torch.zeros([], device=device)
         self.truncation_psi = truncation_psi
-        self.pcp = PerceptualLoss(layer_weights=dict(conv4_4=1/4, conv5_4=1/2)).to(device)
+        self.pcp = PerceptualLoss(layer_weights=dict(conv4_4=1/4, conv5_4=1/2)).to(device) if pcp_ratio > 0 else None
         self.pcp_ratio = pcp_ratio
+        self.l1_weight = l1_weight
+        self.fm_weight = fm_weight
+        self.hrf_weight = hrf_weight
+        self.resnet_pl = ResNetPL(weight=1).to(device) if hrf_weight > 0 else None
 
     def run_G(self, img_in, mask_in, z, c, sync):
         with misc.ddp_sync(self.G_mapping, sync):
@@ -51,7 +57,7 @@ class TwoStageLoss(Loss):
             img, img_stg1 = self.G_synthesis(img_in, mask_in, ws, return_stg1=True)
         return img, ws, img_stg1
 
-    def run_D(self, img, mask, img_stg1, c, sync):
+    def run_D(self, img, mask, img_stg1, c, sync, return_feats=False):
         # if self.augment_pipe is not None:
         #     # img = self.augment_pipe(img)
         #     # !!!!! have to remove the color transform
@@ -59,8 +65,8 @@ class TwoStageLoss(Loss):
         #     tmp_img = self.augment_pipe(tmp_img)
         #     img, mask = torch.split(tmp_img, [3, 1])
         with misc.ddp_sync(self.D, sync):
-            logits, logits_stg1 = self.D(img, mask, img_stg1, c)
-        return logits, logits_stg1
+            out = self.D(img, mask, img_stg1, c, return_feats=return_feats)
+        return out
 
     def accumulate_gradients(self, phase, real_img, mask, real_c, gen_z, gen_c, sync, gain):
         assert phase in ['Gmain', 'Greg', 'Gboth', 'Dmain', 'Dreg', 'Dboth']
@@ -73,7 +79,7 @@ class TwoStageLoss(Loss):
         if do_Gmain:
             with torch.autograd.profiler.record_function('Gmain_forward'):
                 gen_img, _gen_ws, gen_img_stg1 = self.run_G(real_img, mask, gen_z, gen_c, sync=(sync and not do_Gpl)) # May get synced by Gpl.
-                gen_logits, gen_logits_stg1 = self.run_D(gen_img, mask, gen_img_stg1, gen_c, sync=False)
+                gen_logits, gen_logits_stg1, gen_feats, gen_feats_stg1 = self.run_D(gen_img, mask, gen_img_stg1, gen_c, sync=False, return_feats=True)
                 training_stats.report('Loss/scores/fake', gen_logits)
                 training_stats.report('Loss/signs/fake', gen_logits.sign())
                 training_stats.report('Loss/scores/fake_s1', gen_logits_stg1)
@@ -82,13 +88,47 @@ class TwoStageLoss(Loss):
                 training_stats.report('Loss/G/loss', loss_Gmain)
                 loss_Gmain_stg1 = torch.nn.functional.softplus(-gen_logits_stg1)
                 training_stats.report('Loss/G/loss_s1', loss_Gmain_stg1)
-                # just for showing
                 l1_loss = torch.mean(torch.abs(gen_img - real_img))
                 training_stats.report('Loss/G/l1_loss', l1_loss)
-                pcp_loss, _ = self.pcp(gen_img, real_img)
-                training_stats.report('Loss/G/pcp_loss', pcp_loss)
+                # hole-normalized L1 on the composited output: valid pixels are
+                # identical by construction, so this penalizes only the hole
+                hole = 1 - mask
+                l1_hole = (torch.abs(gen_img - real_img) * hole).sum(dim=[1, 2, 3]) \
+                          / (hole.sum(dim=[1, 2, 3]) * gen_img.shape[1] + 1e-8)
+                l1_hole = l1_hole.view(-1, 1)  # match gen_logits shape (B,1); (B,)+(B,1) would broadcast to (B,B)
+                training_stats.report('Loss/G/l1_hole', l1_hole)
+                # stage-1 output is full-res and hard-composited, so this is hole-only too
+                l1_stg1 = (torch.abs(gen_img_stg1 - real_img) * hole).sum(dim=[1, 2, 3]) \
+                          / (hole.sum(dim=[1, 2, 3]) * gen_img.shape[1] + 1e-8)
+                l1_stg1 = l1_stg1.view(-1, 1)
+                training_stats.report('Loss/G/l1_stg1', l1_stg1)
+
+                loss_Gmain_all = loss_Gmain + loss_Gmain_stg1 \
+                                 + (l1_hole + l1_stg1) * self.l1_weight
+
+                if self.pcp is not None:
+                    pcp_loss, _ = self.pcp(gen_img, real_img)
+                    training_stats.report('Loss/G/pcp_loss', pcp_loss)
+                    loss_Gmain_all = loss_Gmain_all + pcp_loss * self.pcp_ratio
+
+                if self.resnet_pl is not None:
+                    # HRF perceptual expects [0,1]
+                    hrf_loss = self.resnet_pl((gen_img + 1) * 0.5, (real_img + 1) * 0.5)
+                    training_stats.report('Loss/G/hrf_loss', hrf_loss)
+                    loss_Gmain_all = loss_Gmain_all + hrf_loss * self.hrf_weight
+
+                if self.fm_weight > 0:
+                    with torch.no_grad():
+                        _, _, real_feats, real_feats_stg1 = self.run_D(real_img, mask, real_img, gen_c, sync=False, return_feats=True)
+                    fm_loss = 0.0
+                    for f_g, f_r in zip(gen_feats, real_feats):
+                        fm_loss = fm_loss + F.l1_loss(f_g, f_r)
+                    for f_g, f_r in zip(gen_feats_stg1, real_feats_stg1):
+                        fm_loss = fm_loss + F.l1_loss(f_g, f_r)
+                    fm_loss = fm_loss / max(1, len(gen_feats) + len(gen_feats_stg1))
+                    training_stats.report('Loss/G/fm_loss', fm_loss)
+                    loss_Gmain_all = loss_Gmain_all + fm_loss * self.fm_weight
             with torch.autograd.profiler.record_function('Gmain_backward'):
-                loss_Gmain_all = loss_Gmain + loss_Gmain_stg1 + pcp_loss * self.pcp_ratio
                 loss_Gmain_all.mean().mul(gain).backward()
 
         # # Gpl: Apply path length regularization.

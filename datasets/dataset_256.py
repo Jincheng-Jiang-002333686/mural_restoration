@@ -160,12 +160,14 @@ class ImageFolderMaskDataset(Dataset):
     def __init__(self,
         path,                   # Path to directory or zip.
         resolution      = None, # Ensure specific resolution, None = highest available.
-        hole_range=[0,1],
+        hole_range=[0.2, 0.3],
+        deterministic_mask=False,  # Seed the mask by image index (for stable eval)
         **super_kwargs,         # Additional arguments for the Dataset base class.
     ):
         self._path = path
         self._zipfile = None
-        self._hole_range = [0.2, 0.3]
+        self._hole_range = list(hole_range) if hole_range is not None else [0.2, 0.3]
+        self._deterministic_mask = deterministic_mask
 
         if os.path.isdir(self._path):
             self._type = 'dir'
@@ -269,7 +271,16 @@ class ImageFolderMaskDataset(Dataset):
         if self._xflip[idx]:
             assert image.ndim == 3 # CHW
             image = image[:, :, ::-1]
-        mask = RandomMask(image.shape[-1], hole_range=self._hole_range)  # hole as 0, reserved as 1
+        if self._deterministic_mask:
+            np_state = np.random.get_state()
+            py_state = random.getstate()
+            np.random.seed(int(self._raw_idx[idx]) & 0x7fffffff)
+            random.seed(int(self._raw_idx[idx]))
+            mask = RandomMask(image.shape[-1], hole_range=self._hole_range)  # hole as 0, reserved as 1
+            np.random.set_state(np_state)
+            random.setstate(py_state)
+        else:
+            mask = RandomMask(image.shape[-1], hole_range=self._hole_range)  # hole as 0, reserved as 1
         return image.copy(), mask, self.get_label(idx)
 
 

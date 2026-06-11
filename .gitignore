@@ -127,3 +127,14 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# --- project-specific (added 2026-06-10) ---
+.idea/
+wandb/
+outputs/
+restoration_results*/
+mask_samples/
+networks(failed)/
+*.pkl
+*.pth
+*.ckpt

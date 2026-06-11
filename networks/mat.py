@@ -145,6 +145,19 @@ class MADFFilterGen(nn.Module):
 
         return filters, mask_features
 
+    def basis_weights(self):
+        """Reparametrize the linear per-pixel filter generator as 16+1 standard
+        conv kernels: y(p) = sum_j mf_j(p) * conv_Bj(x)(p) + conv_b(x)(p).
+        Exact identity with the unfold+matmul path, but avoids materializing the
+        [N, HW, C_in*k*k, C_out] filter tensor (~3.6 GB/sample at 128/64 res)."""
+        k, cin, cout = self.kernel_size, self.in_channels, self.out_channels
+        nhidden = self.to_filters.in_channels
+        # to_filters.weight: [cin*k*k*cout, nhidden, 1, 1]; flat index = ((c*k+kh)*k+kw)*cout + o
+        W1 = self.to_filters.weight.view(cin, k, k, cout, nhidden)
+        Wj = W1.permute(4, 3, 0, 1, 2).reshape(nhidden * cout, cin, k, k)
+        Wb = self.to_filters.bias.view(cin, k, k, cout).permute(3, 0, 1, 2)
+        return torch.cat([Wj, Wb], dim=0)  # [(nhidden+1)*cout, cin, k, k]
+
 
 
 
@@ -177,13 +190,25 @@ class MADFLayer(nn.Module):
         self.conv = MADFConv(out_channels, kernel_size, self.stride, self.padding, activation)
 
     def forward(self, x, mask):
-        # Generate filters at OUTPUT resolution
+        # Basis-conv reparametrization of the dynamic convolution (exact identity
+        # with forward_reference, without the per-pixel filter tensor)
+        mask_features = self.filter_gen.mask_conv(mask)  # [N, nhidden, H_out, W_out]
+        W_all = self.filter_gen.basis_weights()
+        z = F.conv2d(x, W_all, stride=self.stride, padding=self.padding)
+        N, _, H_out, W_out = z.shape
+        nhidden = mask_features.shape[1]
+        cout = self.conv.out_channels
+        z = z.view(N, nhidden + 1, cout, H_out, W_out)
+        y = (z[:, :nhidden] * mask_features.unsqueeze(2)).sum(dim=1) + z[:, nhidden]
+        y = y + self.conv.bias.view(1, -1, 1, 1)
+        if self.conv.activation_fn is not None:
+            y = self.conv.activation_fn(y)
+        return y, mask_features
+
+    def forward_reference(self, x, mask):
+        # Original unfold+matmul path, kept for the equality unit test
         filters, mask_features = self.filter_gen(mask)
-
-        # Apply dynamic convolution
         x = self.conv(x, filters)
-
-        # Return processed features and propagated mask
         return x, mask_features
 
 @persistence.persistent_class
@@ -237,8 +262,12 @@ class WindowAttention(nn.Module):
 
         if mask_windows is not None:
             attn_mask_windows = mask_windows.squeeze(-1).unsqueeze(1).unsqueeze(1)
-            attn = attn + attn_mask_windows.masked_fill(attn_mask_windows == 0, float(-100.0)).masked_fill(
+            bias = attn_mask_windows.masked_fill(attn_mask_windows == 0, float(-100.0)).masked_fill(
                 attn_mask_windows == 1, float(0.0))
+            # windows with no valid token would otherwise degenerate to a uniform
+            # average over hole tokens; fall back to content-based attention there
+            has_valid = (attn_mask_windows.sum(dim=-1, keepdim=True) > 0).to(bias.dtype)
+            attn = attn + bias * has_valid
             with torch.no_grad():
                 mask_windows = torch.clamp(torch.sum(mask_windows, dim=1, keepdim=True), 0, 1).repeat(1, N, 1)
 
@@ -910,7 +939,10 @@ class FirstStage(nn.Module):
         # Transformer and Style Generation Pass
         x_size = x.size()[-2:]
         x = feature2token(x)
-        mask_binary = (mask.mean(dim=1, keepdim=True) > 0).float()
+        # Token validity must come from the real hole mask (1=preserved/0=hole);
+        # thresholding the unsigned learned MADF features marks hole tokens as
+        # valid (inverted), which makes the masked attention suppress known context.
+        mask_binary = F.interpolate(masks_in, size=x_size, mode='nearest')
         mask_token = feature2token(mask_binary) if mask_binary is not None else None
         transformer_skips = []
         mid = len(self.tran) // 2
@@ -988,8 +1020,12 @@ class SynthesisNet(nn.Module):
         E_features = self.enc(x)
 
         fea_16 = E_features[4]
-        mul_map = torch.ones_like(fea_16) * 0.5
-        mul_map = F.dropout(mul_map, training=True)
+        mul_map_const = getattr(self, 'mul_map_const', None)  # eval-sweep override
+        if mul_map_const is None:
+            mul_map = torch.ones_like(fea_16) * 0.5
+            mul_map = F.dropout(mul_map, training=self.training)
+        else:
+            mul_map = torch.ones_like(fea_16) * mul_map_const
         add_n = self.to_square(ws[:, 0]).view(-1, 16, 16).unsqueeze(1)
         add_n = F.interpolate(add_n, size=fea_16.size()[-2:], mode='bilinear', align_corners=False)
         fea_16 = fea_16 * mul_map + add_n * (1 - mul_map)
@@ -1108,11 +1144,21 @@ class Discriminator(torch.nn.Module):
         self.fc0_stg1 = FullyConnectedLayer(nf(2) // 2 * 4 ** 2, nf(2) // 2, activation=activation)
         self.fc1_stg1 = FullyConnectedLayer(nf(2) // 2, 1 if cmap_dim == 0 else cmap_dim)
 
-    def forward(self, images_in, masks_in, images_stg1, c):
-        x = self.Dis(torch.cat([masks_in - 0.5, images_in], dim=1))
+    def forward(self, images_in, masks_in, images_stg1, c, return_feats=False):
+        feats = []
+        x = torch.cat([masks_in - 0.5, images_in], dim=1)
+        for layer in self.Dis:
+            x = layer(x)
+            if return_feats and isinstance(layer, DisBlock):
+                feats.append(x)
         x = self.fc1(self.fc0(x.flatten(start_dim=1)))
 
-        x_stg1 = self.Dis_stg1(torch.cat([masks_in - 0.5, images_stg1], dim=1))
+        feats_stg1 = []
+        x_stg1 = torch.cat([masks_in - 0.5, images_stg1], dim=1)
+        for layer in self.Dis_stg1:
+            x_stg1 = layer(x_stg1)
+            if return_feats and isinstance(layer, DisBlock):
+                feats_stg1.append(x_stg1)
         x_stg1 = self.fc1_stg1(self.fc0_stg1(x_stg1.flatten(start_dim=1)))
 
         if self.c_dim > 0:
@@ -1122,6 +1168,8 @@ class Discriminator(torch.nn.Module):
             x = (x * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
             x_stg1 = (x_stg1 * cmap).sum(dim=1, keepdim=True) * (1 / np.sqrt(self.cmap_dim))
 
+        if return_feats:
+            return x, x_stg1, feats, feats_stg1
         return x, x_stg1
 
 

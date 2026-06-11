@@ -179,7 +179,7 @@ class ProgressMonitor:
 
 #----------------------------------------------------------------------------
 
-def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_lo=0, rel_hi=1, batch_size=1, data_loader_kwargs=None, max_items=None, **stats_kwargs):
+def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_lo=0, rel_hi=1, batch_size=2, data_loader_kwargs=None, max_items=None, **stats_kwargs):
     dataset = dnnlib.util.construct_class_by_name(**opts.dataset_kwargs)
     if data_loader_kwargs is None:
         data_loader_kwargs = dict(pin_memory=True, num_workers=3, prefetch_factor=2)
@@ -235,12 +235,12 @@ def compute_feature_stats_for_dataset(opts, detector_url, detector_kwargs, rel_l
 
 #----------------------------------------------------------------------------
 
-def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel_lo=0, rel_hi=1, batch_size=1, batch_gen=None, jit=False, data_loader_kwargs=None, **stats_kwargs):
+def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel_lo=0, rel_hi=1, batch_size=2, batch_gen=None, jit=False, data_loader_kwargs=None, **stats_kwargs):
     if data_loader_kwargs is None:
         data_loader_kwargs = dict(pin_memory=True, num_workers=3, prefetch_factor=2)
 
     if batch_gen is None:
-        batch_gen = min(batch_size, 4)
+        batch_gen = min(batch_size, 2)
     assert batch_size % batch_gen == 0
 
     # Setup generator and load labels.
@@ -261,6 +261,7 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
     #     run_generator = torch.jit.trace(run_generator, [z, c], check_trace=False)
 
     # Initialize.
+    _eval_z_idx = [0]
     stats = FeatureStats(**stats_kwargs)
     assert stats.max_items is not None
     progress = opts.progress.sub(tag='generator features', num_items=stats.max_items, rel_lo=rel_lo, rel_hi=rel_hi)
@@ -275,7 +276,8 @@ def compute_feature_stats_for_generator(opts, detector_url, detector_kwargs, rel
         imgs_gen = (imgs_batch.to(opts.device).to(torch.float32) / 127.5 - 1).split(batch_gen)
         masks_gen = masks_batch.to(opts.device).to(torch.float32).split(batch_gen)
         for img_in, mask_in in zip(imgs_gen, masks_gen):
-            z = torch.randn([img_in.shape[0], G.z_dim], device=opts.device)
+            z = torch.from_numpy(np.random.RandomState(_eval_z_idx[0]).randn(img_in.shape[0], G.z_dim)).to(torch.float32).to(opts.device)
+            _eval_z_idx[0] += 1
             c = [dataset.get_label(np.random.randint(len(dataset))) for _i in range(img_in.shape[0])]
             c = torch.from_numpy(np.stack(c)).pin_memory().to(opts.device)
             images.append(run_generator(img_in, mask_in, z, c))
@@ -294,7 +296,7 @@ def compute_image_stats_for_generator(opts, rel_lo=0, rel_hi=1, batch_size=1, ba
         data_loader_kwargs = dict(pin_memory=True, num_workers=3, prefetch_factor=2)
 
     if batch_gen is None:
-        batch_gen = min(batch_size, 4)
+        batch_gen = min(batch_size, 2)
     assert batch_size % batch_gen == 0
 
     # Setup generator and load labels.
@@ -309,6 +311,7 @@ def compute_image_stats_for_generator(opts, rel_lo=0, rel_hi=1, batch_size=1, ba
         return img
 
     # Initialize.
+    _eval_z_idx = [0]
     stats = FeatureStats(**stats_kwargs)
     assert stats.max_items is not None
     progress = opts.progress.sub(tag='generator images', num_items=stats.max_items, rel_lo=rel_lo, rel_hi=rel_hi)
@@ -322,7 +325,8 @@ def compute_image_stats_for_generator(opts, rel_lo=0, rel_hi=1, batch_size=1, ba
         imgs_gen = (imgs_batch.to(opts.device).to(torch.float32) / 127.5 - 1).split(batch_gen)
         masks_gen = masks_batch.to(opts.device).to(torch.float32).split(batch_gen)
         for img_in, mask_in in zip(imgs_gen, masks_gen):
-            z = torch.randn([img_in.shape[0], G.z_dim], device=opts.device)
+            z = torch.from_numpy(np.random.RandomState(_eval_z_idx[0]).randn(img_in.shape[0], G.z_dim)).to(torch.float32).to(opts.device)
+            _eval_z_idx[0] += 1
             c = [dataset.get_label(np.random.randint(len(dataset))) for _i in range(img_in.shape[0])]
             c = torch.from_numpy(np.stack(c)).pin_memory().to(opts.device)
             images.append(run_generator(img_in, mask_in, z, c))

@@ -4,6 +4,29 @@ import math
 import random
 
 
+def _draw_jagged_line(draw, points, fill=1, width=1, skip_prob=0.06):
+    if len(points) < 2:
+        return
+    for p0, p1 in zip(points[:-1], points[1:]):
+        if np.random.random() > skip_prob:
+            draw.line([p0, p1], fill=fill, width=width)
+
+
+def _random_walk_points(s, start, angle, steps, step_len, angle_jitter):
+    x, y = start
+    points = [(int(x), int(y))]
+    for _ in range(steps):
+        angle += np.random.normal(0, angle_jitter)
+        x += step_len * np.random.uniform(0.6, 1.35) * math.cos(angle)
+        y += step_len * np.random.uniform(0.6, 1.35) * math.sin(angle)
+        x = np.clip(x, 0, s - 1)
+        y = np.clip(y, 0, s - 1)
+        points.append((int(x), int(y)))
+        if x <= 0 or x >= s - 1 or y <= 0 or y >= s - 1:
+            break
+    return points
+
+
 def RandomBrush(
     max_tries,
     s,
@@ -58,34 +81,112 @@ def RandomBrush(
         mask = np.flip(mask, 1)
     return mask
 
-def RandomMask(s, hole_range=[0.4, 0.5]):
+
+def RandomCrack(s, min_cracks=4, max_cracks=12, min_width=1, max_width=3):
+    mask = Image.new('L', (s, s), 0)
+    draw = ImageDraw.Draw(mask)
+
+    for _ in range(np.random.randint(min_cracks, max_cracks + 1)):
+        side = np.random.randint(4)
+        if side == 0:
+            start = (np.random.randint(0, s), 0)
+            angle = np.random.uniform(0.15 * math.pi, 0.85 * math.pi)
+        elif side == 1:
+            start = (s - 1, np.random.randint(0, s))
+            angle = np.random.uniform(0.65 * math.pi, 1.35 * math.pi)
+        elif side == 2:
+            start = (np.random.randint(0, s), s - 1)
+            angle = np.random.uniform(1.15 * math.pi, 1.85 * math.pi)
+        else:
+            start = (0, np.random.randint(0, s))
+            angle = np.random.uniform(-0.35 * math.pi, 0.35 * math.pi)
+
+        steps = np.random.randint(max(14, s // 14), max(24, s // 6))
+        step_len = np.random.uniform(s / 95, s / 45)
+        width = np.random.randint(min_width, max_width + 1)
+        points = _random_walk_points(s, start, angle, steps, step_len, angle_jitter=0.38)
+        _draw_jagged_line(draw, points, width=width, skip_prob=0.03)
+
+        for _ in range(np.random.randint(1, 4)):
+            if len(points) < 5 or np.random.random() > 0.7:
+                continue
+            branch_start = points[np.random.randint(1, len(points) - 1)]
+            branch_angle = angle + np.random.choice([-1, 1]) * np.random.uniform(0.25 * math.pi, 0.65 * math.pi)
+            branch_steps = np.random.randint(5, max(7, steps // 2))
+            branch = _random_walk_points(s, branch_start, branch_angle, branch_steps, step_len, angle_jitter=0.5)
+            _draw_jagged_line(draw, branch, width=max(1, width - 1), skip_prob=0.12)
+
+    return np.asarray(mask, np.uint8)
+
+
+def RandomPeeling(s):
+    # Use the original free-form brush morphology as paint-loss/peeling damage.
+    return RandomBrush(np.random.randint(4, 8), s)
+
+
+def _random_component(s, mask_type):
+    if mask_type == 'brush':
+        return RandomBrush(np.random.randint(2, 6), s)
+    if mask_type == 'crack':
+        return RandomCrack(s)
+    if mask_type == 'peel':
+        return RandomPeeling(s)
+    if mask_type == 'mixed':
+        mode = random.choices(['crack', 'peel'], weights=[0.45, 0.55])[0]
+        return _random_component(s, mode)
+    raise ValueError(f'Unsupported mask_type: {mask_type}')
+
+
+def _sample_mask_type(mask_type):
+    if isinstance(mask_type, (list, tuple)):
+        return random.choice(mask_type)
+    return mask_type
+
+
+def RandomMask(s, hole_range=[0.4, 0.5], mask_type='mixed', max_attempts=200):
     """
-    Generate random mask with only brush strokes.
-    Target hole ratio between 0.2 and 0.3.
+    Generate a random mural degradation mask.
+
+    The returned mask keeps the original convention: 1 is preserved area and
+    0 is damaged/missing area. The hole ratio is still constrained by
+    hole_range, so the 20-30% and 40-50% experiment settings remain comparable.
     """
-    while True:
-        mask = np.ones((s, s), np.uint8)
+    best_mask = None
+    best_error = float('inf')
 
-        # Start with fewer brush strokes and add more if needed
-        # Estimate: start with 4-8 strokes for 20-30% coverage
-        num_strokes = np.random.randint(4, 8)
+    for _ in range(max_attempts):
+        hole = np.zeros((s, s), np.uint8)
+        curr_type = _sample_mask_type(mask_type)
+        max_components = 20 if curr_type == 'crack' else 12
 
-        # Generate brush stroke mask
-        brush_mask = RandomBrush(num_strokes, s)
+        if curr_type == 'mixed':
+            hole = np.logical_or(hole, RandomCrack(s)).astype(np.uint8)
+            hole = np.logical_or(hole, RandomPeeling(s)).astype(np.uint8)
 
-        # Apply brush strokes as holes (invert the brush mask)
-        mask = np.logical_and(mask, 1 - brush_mask).astype(np.uint8)
+        for _ in range(max_components):
+            hole = np.logical_or(hole, _random_component(s, curr_type)).astype(np.uint8)
+            hole_ratio = np.mean(hole)
 
-        # Calculate hole ratio
-        hole_ratio = 1 - np.mean(mask)
+            if hole_range is None:
+                mask = (1 - hole).astype(np.uint8)
+                return mask[np.newaxis, ...].astype(np.float32)
 
-        # Check if within desired range
-        if hole_range is not None and (hole_ratio <= hole_range[0] or hole_ratio >= hole_range[1]):
-            continue
-        return mask[np.newaxis, ...].astype(np.float32)
+            target = 0.5 * (hole_range[0] + hole_range[1])
+            error = abs(hole_ratio - target)
+            if error < best_error:
+                best_error = error
+                best_mask = (1 - hole).astype(np.uint8)
+            if hole_range[0] < hole_ratio < hole_range[1]:
+                mask = (1 - hole).astype(np.uint8)
+                return mask[np.newaxis, ...].astype(np.float32)
+            if hole_ratio > hole_range[1]:
+                break
 
-def BatchRandomMask(batch_size, s, hole_range=[0.4, 0.5]):
-    return np.stack([RandomMask(s, hole_range=hole_range) for _ in range(batch_size)], axis=0)
+    return best_mask[np.newaxis, ...].astype(np.float32)
+
+
+def BatchRandomMask(batch_size, s, hole_range=[0.4, 0.5], mask_type='mixed'):
+    return np.stack([RandomMask(s, hole_range=hole_range, mask_type=mask_type) for _ in range(batch_size)], axis=0)
 
 
 if __name__ == '__main__':

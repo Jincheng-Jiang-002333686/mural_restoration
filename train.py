@@ -57,6 +57,9 @@ def setup_training_loop_kwargs(
     pl         = None, # Train with path length regularization: <bool>, default = True
     kimg       = None, # Override training duration: <int>
     batch      = None, # Override batch size: <int>
+    batch_gpu  = None, # Per-GPU batch size (gradient accumulation if < batch/gpus): <int>
+    glr        = None, # Override generator lr (TTUR): <float>
+    dlr        = None, # Override discriminator lr (TTUR): <float>
     truncation = None, # truncation for training: <float>
     style_mix  = None, # style mixing probability for training: <float>
     ema        = None, # Half-life of the exponential moving average (EMA) of generator weights: <int>
@@ -126,7 +129,7 @@ def setup_training_loop_kwargs(
 
     args.training_set_kwargs = dnnlib.EasyDict(class_name=dataloader, path=data,
                                                use_labels=True, max_size=None, xflip=False)
-    args.val_set_kwargs = dnnlib.EasyDict(class_name=dataloader, path=data_val,
+    args.val_set_kwargs = dnnlib.EasyDict(class_name=dataloader, path=data_val, deterministic_mask=True,
                                           use_labels=True, max_size=None, xflip=False)
     args.data_loader_kwargs = dnnlib.EasyDict(pin_memory=True, num_workers=0, prefetch_factor=2)
 
@@ -239,6 +242,13 @@ def setup_training_loop_kwargs(
         args.G_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', lr=spec.lrate, lrt=spec.lrt, betas=[0, 0.99], eps=1e-8)
     args.D_opt_kwargs = dnnlib.EasyDict(class_name='torch.optim.Adam', lr=spec.lrate, betas=[0, 0.99], eps=1e-8)
 
+    if glr is not None:
+        args.G_opt_kwargs.lr = glr
+        desc += f'-glr{glr:g}'
+    if dlr is not None:
+        args.D_opt_kwargs.lr = dlr
+        desc += f'-dlr{dlr:g}'
+
     if loss is None:
         loss = 'losses.loss.TwoStageLoss'
     else:
@@ -296,6 +306,13 @@ def setup_training_loop_kwargs(
         desc += f'-batch{batch}'
         args.batch_size = batch
         args.batch_gpu = batch // gpus
+
+    if batch_gpu is not None:
+        assert isinstance(batch_gpu, int)
+        if not (batch_gpu >= 1 and args.batch_size % (batch_gpu * gpus) == 0):
+            raise UserError('--batch-gpu must satisfy batch %% (batch_gpu * gpus) == 0')
+        desc += f'-bgpu{batch_gpu}'
+        args.batch_gpu = batch_gpu
 
     if truncation is not None:
         assert isinstance(truncation, float)
@@ -521,6 +538,9 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--pl', help='Enable path length regularization [default: true]', type=bool, metavar='BOOL')
 @click.option('--kimg', help='Override training duration', type=int, metavar='INT')
 @click.option('--batch', help='Override batch size', type=int, metavar='INT')
+@click.option('--batch-gpu', 'batch_gpu', help='Per-GPU batch size (enables gradient accumulation)', type=int, metavar='INT')
+@click.option('--glr', help='Override generator learning rate (TTUR)', type=float)
+@click.option('--dlr', help='Override discriminator learning rate (TTUR)', type=float)
 @click.option('--truncation', help='truncation for training', type=float)
 @click.option('--style_mix', help='style mixing probability for training', type=float)
 @click.option('--ema', help='Half-life of the exponential moving average (EMA) of generator weights', type=int, metavar='INT')

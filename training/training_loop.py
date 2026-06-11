@@ -152,7 +152,7 @@ def training_loop(
     training_set_iterator = iter(torch.utils.data.DataLoader(dataset=training_set, sampler=training_set_sampler,
                                                              batch_size=batch_size // num_gpus, **data_loader_kwargs))
     if rank == 0:
-        wandb_project_name = os.environ.get('mural_restoration', 'mat-inpainting')
+        wandb_project_name = os.environ.get('WANDB_PROJECT', 'mural_inpainting')
         wandb_run_name = os.path.basename(run_dir)
         wandb.init(
             project=wandb_project_name,
@@ -471,6 +471,7 @@ def training_loop(
                 print('Evaluating metrics...')
             for metric in metrics:
                 result_dict = metric_main.calc_metric(metric=metric, G=snapshot_data['G_ema'],
+                                                      G_kwargs=dict(noise_mode='const'),
                                                       dataset_kwargs=val_set_kwargs, num_gpus=num_gpus, rank=rank,
                                                       device=device)
                 if rank == 0:

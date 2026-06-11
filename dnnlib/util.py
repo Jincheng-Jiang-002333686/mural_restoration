@@ -69,6 +69,10 @@ class Logger(object):
         sys.stdout = self
         sys.stderr = self
 
+    def isatty(self) -> bool:
+        # wandb's shutdown path probes sys.stderr.isatty(); this tee is not a tty
+        return False
+
     def __enter__(self) -> "Logger":
         return self
 

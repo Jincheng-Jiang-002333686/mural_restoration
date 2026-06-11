@@ -1,0 +1,9 @@
+model,mask_type,hole_range,n_images,psnr,ssim,l1,fid,pids,uids,pred_dir
+lama-fourier,mixed,"[0.2,0.3]",2649,25.1852,0.8951,0.0200,20.6057,0.0000,0.0000,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/lama_mixed02_03
+lama-fourier-bestfid,mixed,"[0.2,0.3]",2649,25.2992,0.8980,0.0193,17.7745,0.0000,0.0008,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/lama_mixed02_03_best
+hmat-snapshot-000500,mixed,"[0.2,0.3]",2649,24.2194,0.8916,0.0217,15.4937,0.0136,0.0247,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/hmat_000500
+hmat-snapshot-000560,mixed,"[0.2,0.3]",2649,24.2376,0.8919,0.0216,15.2475,0.0098,0.0217,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/hmat_000560
+hmat-000560-evalmode_psi1,mixed,"[0.2,0.3]",2649,24.1979,0.8920,0.0217,15.2581,0.0121,0.0257,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/hmat_sweep_evalmode_psi1
+hmat-000560-evalmode_psi05,mixed,"[0.2,0.3]",2649,24.1999,0.8920,0.0217,15.2487,0.0106,0.0259,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/hmat_sweep_evalmode_psi05
+hmat-000560-evalmode_psi0,mixed,"[0.2,0.3]",2649,24.2011,0.8920,0.0217,15.2445,0.0098,0.0262,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/hmat_sweep_evalmode_psi0
+hmat-000560-evalmode_psi0_mm1,mixed,"[0.2,0.3]",2649,24.1460,0.8910,0.0219,15.2590,0.0057,0.0211,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/hmat_sweep_evalmode_psi0_mm1
