@@ -25,6 +25,8 @@ RESULTS_CSV = os.path.join(PROJ, 'lama_mat_comparison', 'results', 'test_metrics
 
 def main():
     pred_dir, gt_dir, model_name = sys.argv[1], sys.argv[2], sys.argv[3]
+    import glob as _glob
+    n_images = len(_glob.glob(os.path.join(pred_dir, '*.png')))
 
     psnr, ssim, l1 = cal_psnr_ssim_l1.calculate_metrics(pred_dir, gt_dir)
     fid, pids, uids = cal_fid_pids_uids.calculate_metrics(pred_dir, gt_dir)
@@ -40,7 +42,7 @@ def main():
         if write_header:
             w.writerow(['model', 'mask_type', 'hole_range', 'n_images',
                         'psnr', 'ssim', 'l1', 'fid', 'pids', 'uids', 'pred_dir'])
-        w.writerow([model_name, 'mixed', '[0.2,0.3]', 2649,
+        w.writerow([model_name, 'mixed', '[0.2,0.3]', n_images,
                     f'{psnr:.4f}', f'{ssim:.4f}', f'{l1:.4f}',
                     f'{fid:.4f}', f'{pids:.4f}', f'{uids:.4f}', pred_dir])
     print(f'appended to {RESULTS_CSV}')
@@ -59,7 +61,7 @@ def main():
                          name=f'{model_name}-test-eval',
                          job_type='final_eval',
                          config=dict(model=model_name, mask_type='mixed',
-                                     hole_range=[0.2, 0.3], n_images=2649,
+                                     hole_range=[0.2, 0.3], n_images=n_images,
                                      pred_dir=pred_dir, gt_dir=gt_dir))
         wandb.log({'Test/psnr': psnr, 'Test/ssim': ssim, 'Test/l1': l1,
                    'Test/fid': fid, 'Test/pids': pids, 'Test/uids': uids})

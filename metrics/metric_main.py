@@ -112,6 +112,18 @@ def ids_places(opts):
     return dict(u_ids=u_ids, p_ids=p_ids)
 
 @register_metric
+def fid500_full(opts):
+    opts.dataset_kwargs.update(max_size=None, xflip=False)
+    fid = frechet_inception_distance.compute_fid(opts, max_real=500, num_gen=500)
+    return dict(fid500_full=fid)
+
+@register_metric
+def psnr500_full(opts):
+    opts.dataset_kwargs.update(max_size=None, xflip=False)
+    psnr, ssim, l1 = psnr_ssim_l1.compute_psnr(opts, max_real=500)
+    return dict(psnr=psnr, ssim=ssim, l1=l1)
+
+@register_metric
 def psnr2649_full(opts):
     opts.dataset_kwargs.update(max_size=None, xflip=False)
     psnr, ssim, l1 = psnr_ssim_l1.compute_psnr(opts, max_real=2649)

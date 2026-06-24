@@ -53,6 +53,9 @@ def setup_training_loop_kwargs(
     loss = None,
     gamma      = None, # Override R1 gamma: <float>
     pr         = None,
+    l1w        = None, # v2 hole-L1 weight
+    fmw        = None, # v2 feature-matching weight
+    hrfw       = None, # v2 HRF perceptual weight
     ssim       = None,
     pl         = None, # Train with path length regularization: <bool>, default = True
     kimg       = None, # Override training duration: <int>
@@ -277,6 +280,16 @@ def setup_training_loop_kwargs(
         assert isinstance(pr, float)
         desc += f'-pr{pr:g}'
         args.loss_kwargs.pcp_ratio = pr
+
+    if l1w is not None:
+        desc += f'-l1w{l1w:g}'
+        args.loss_kwargs.l1_weight = l1w
+    if fmw is not None:
+        desc += f'-fmw{fmw:g}'
+        args.loss_kwargs.fm_weight = fmw
+    if hrfw is not None:
+        desc += f'-hrfw{hrfw:g}'
+        args.loss_kwargs.hrf_weight = hrfw
 
     if ssim is not None:
         assert isinstance(ssim, float)
@@ -534,6 +547,9 @@ class CommaSeparatedList(click.ParamType):
 @click.option('--loss', help='the path of loss', type=str, metavar='STRING')
 @click.option('--gamma', help='Override R1 gamma', type=float)
 @click.option('--pr', help='Override ratio of pcp loss', type=float)
+@click.option('--l1w', help='v2 hole-L1 weight', type=float)
+@click.option('--fmw', help='v2 feature-matching weight', type=float)
+@click.option('--hrfw', help='v2 HRF perceptual weight', type=float)
 @click.option('--ssim', help='Weight for SSIM loss [default: 1.0]', type=float)
 @click.option('--pl', help='Enable path length regularization [default: true]', type=bool, metavar='BOOL')
 @click.option('--kimg', help='Override training duration', type=int, metavar='INT')

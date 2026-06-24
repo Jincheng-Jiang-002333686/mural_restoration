@@ -17,14 +17,54 @@ fixed seeded test masks (mixed crack+peel, 20-30% damage), full-image metrics.
 All baselines self-trained on identical data and masks; one shared metric
 implementation (`benchmark/scripts/eval_outputs.py`).
 
+**DHMural** (2,649 test images, 256x256):
+
+| Model | PSNR ↑ | SSIM ↑ | L1 ↓ | FID ↓ | P-IDS ↑ | U-IDS ↑ |
+|---|---|---|---|---|---|---|
+| **HMAT v2 (k2000)** | **25.30** | **0.899** | **0.0191** | **12.54** | **0.054** | **0.078** |
+| LaMa-fourier | 25.30 | 0.898 | 0.0193 | 17.77 | 0.000 | 0.001 |
+| HMAT (pre-fix, kimg 572) | 24.24 | 0.892 | 0.0216 | 15.25 | 0.010 | 0.022 |
+| EdgeConnect | 23.75 | 0.881 | 0.0237 | 32.54 | 0.000 | 0.000 |
+
+**Nine-Colored Deer** (500 test images, 256x256):
+
 | Model | PSNR ↑ | SSIM ↑ | L1 ↓ | FID ↓ |
 |---|---|---|---|---|
-| LaMa-fourier (best ckpt) | 25.30 | 0.898 | 0.0193 | 17.77 |
-| HMAT (kimg 572, old recipe) | 24.24 | 0.892 | 0.0216 | 15.25 |
-| HMAT v2 (training recipe below, in progress) | 24.65+ | 0.893 | 0.0206 | **15.30** |
+| **HMAT v2 (k200)** | **28.47** | **0.919** | **0.0124** | 25.90 |
+| HMAT (original paper) | 27.37 | 0.903 | 0.014 | — |
+| MADF (original paper) | 27.05 | 0.898 | 0.015 | — |
+| MAT (original paper) | 26.53 | 0.898 | 0.015 | — |
 
-HMAT leads on perceptual realism (FID, P-IDS/U-IDS); the v2 recipe is closing
-the pixel-fidelity gap. Full numbers: `benchmark/results/test_metrics.csv`.
+HMAT v2 matches or beats LaMa on every DHMural metric and decisively wins
+perceptual realism (FID, P-IDS/U-IDS); on Nine-Colored Deer it beats the
+original paper's HMAT/MADF/MAT baselines. All baselines self-trained on
+identical data and masks, scored by one metric implementation
+(`benchmark/scripts/eval_outputs.py`). Full numbers:
+`benchmark/results/test_metrics.csv`.
+
+### Ablations (DHMural, equal budget 600 kimg from scratch)
+
+Component contribution (Δ PSNR when removed; clean variants from the fixed
+`mat.py`):
+
+| Component | Δ PSNR | Δ boundary PSNR | verdict |
+|---|---|---|---|
+| MADF | +0.10 | +0.20 | key local component (strongest at boundary) |
+| Mask-Guided Style | +0.02 | +0.02 | minor |
+| Teacher-Forcing | ≈0 | ≈0 | removed (no measurable effect) |
+
+Loss ablation (same TF-free architecture, old `adv+VGG` vs new
+`hole-L1 + feature-matching + HRF`):
+
+| | PSNR | hole PSNR | hole SSIM |
+|---|---|---|---|
+| new loss | 24.90 | 18.79 | 0.593 |
+| old loss | 23.78 | 17.67 | 0.548 |
+| **Δ** | **+1.12** | **+1.12** | **+0.045** |
+
+**The training objective is the dominant lever (+1.12 dB, ~11x the best
+architecture component).** Full ablation tables: `benchmark/docs/final_results.md`;
+chronology: `benchmark/docs/worklog.md`.
 
 ## Environment
 

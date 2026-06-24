@@ -25,6 +25,11 @@ sys.path.insert(0, PROJ)  # some pickled refs use the 'MAT.' package prefix
 GT_DIR = os.path.join(PROJ, 'lama_mat_comparison/data/mural_lama/gt_256')
 MASK_DIR = os.path.join(PROJ, 'lama_mat_comparison/masks/test_mixed_hole02_03')
 BATCH = 4
+# optional overrides: argv[3]=gt_dir argv[4]=mask_dir
+if len(sys.argv) > 3:
+    GT_DIR = sys.argv[3]
+if len(sys.argv) > 4:
+    MASK_DIR = sys.argv[4]
 
 
 def main():
@@ -38,7 +43,7 @@ def main():
     print(f'loaded {snapshot_pkl}: z_dim={G.z_dim} res={G.img_resolution}')
 
     names = sorted(f for f in os.listdir(GT_DIR) if f.endswith('.png'))
-    assert len(names) == 2649, len(names)
+    assert len(names) > 0, GT_DIR
 
     for start in range(0, len(names), BATCH):
         chunk = names[start:start + BATCH]
