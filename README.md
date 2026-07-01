@@ -31,8 +31,8 @@ implementation (`benchmark/scripts/eval_outputs.py`).
 | Model | PSNR ↑ | SSIM ↑ | L1 ↓ | FID ↓ |
 |---|---|---|---|---|
 | **HMAT v2 (k200)** | **28.47** | **0.919** | **0.0124** | **10.90** |
-| MADF (original paper) | 27.05 | 0.898 | 0.015 | 14.33 |
-| MAT (original paper) | 26.53 | 0.898 | 0.015 | 14.12 |
+| MADF (original paper) | 27.05 | 0.898 | 0.015 | 15.80 |
+| MAT (original paper) | 26.53 | 0.898 | 0.015 | 17.20 |
 
 HMAT v2 matches or beats LaMa on every DHMural metric and decisively wins
 perceptual realism (FID, P-IDS/U-IDS); on Nine-Colored Deer it beats the
@@ -49,7 +49,7 @@ Component contribution (Δ PSNR when removed; clean variants from the fixed
 | Component | Δ PSNR | Δ boundary PSNR | verdict |
 |---|---|---|---|
 | MADF | +0.20 | +0.40 | key local component (strongest at boundary) |
-| Mask-Guided Style | +0.22 | +0.22 | minor |
+| Mask-Guided Style | +0.12 | +0.22 | minor |
 | Teacher-Forcing | ≈0 | ≈0 | (no measurable effect) |
 
 Loss ablation (same TF-free architecture, old `adv+VGG` vs new

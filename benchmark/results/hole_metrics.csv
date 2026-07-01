@@ -1,6 +1,0 @@
-model,n,hole_psnr,hole_ssim,hole_l1,band_psnr,band_ssim,band_l1,pred_dir
-abl-full-k600,2649,18.7813,0.5926,0.0797,26.9390,0.9013,0.0161,outputs/abl_full
-abl-nomadf-k600,2649,18.6817,0.5881,0.0809,26.7399,0.8994,0.0165,outputs/abl_nomadf
-abl-notf-k600,2649,18.7903,0.5930,0.0796,26.9566,0.9017,0.0161,outputs/abl_notf
-abl-nomgstyle-k600,2649,18.7654,0.5904,0.0800,26.9203,0.9009,0.0161,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/abl_nomgstyle
-loss-notf-oldloss-k600,2649,17.6705,0.5476,0.0924,25.7923,0.8852,0.0188,/home/jincheng/Mural/mural_project/lama_mat_comparison/outputs/loss_notf_oldloss

@@ -1,5 +1,0 @@
-# @package _group_
-data_root_dir: /home/jincheng/Mural/mural_project/lama_mat_comparison/data/mural_lama
-out_root_dir: /home/jincheng/Mural/mural_project/lama_mat_comparison/experiments
-tb_dir: /home/jincheng/Mural/mural_project/lama_mat_comparison/tb_logs
-pretrained_models: /home/jincheng/Mural/mural_project/lama_mat_comparison/torch_home
