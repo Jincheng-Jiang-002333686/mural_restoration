@@ -141,3 +141,15 @@ Metrics: PSNR / SSIM / L1 (cv2 implementations), FID / P-IDS / U-IDS
   training, real batches on a single 24 GB GPU.
 - TTUR, R1 gamma 2, style mixing disabled; gradient accumulation via
   `--batch-gpu`.
+
+## License and Acknowledgement
+
+This repository is an adapted research codebase derived from
+[MAT: Mask-Aware Transformer for Large Hole Image Inpainting](https://github.com/fenglinglwb/MAT),
+which is built on NVIDIA's StyleGAN2-ADA PyTorch implementation. The code and
+models are provided for research and non-commercial use under the Creative
+Commons Attribution-NonCommercial 4.0 International license; see `LICENSE`.
+
+Please retain the upstream copyright and license notices when redistributing or
+modifying this code. Some vendored components, including the ADE20K semantic
+segmentation utilities, carry their own license headers.
